@@ -3,28 +3,33 @@
 ## Description
 
 This repository contains a C# WPF application that automates the Rocket League drop opening process.  
-It provides a modern user interface, customizable hotkeys, and visual feedback on whether the game is detected.
+It provides a modern user interface, fixed hotkeys, automatic delay handling, and visual feedback on whether the game is detected.
 
 ## Features
 
 - Automatic drop opening in Rocket League.
-- Modern and clean WPF interface with status display.
-- Customizable Start/Stop hotkeys.
+- Fixed hotkeys (**F4 = Start**, **F5 = Stop/Exit**).
+- Automatic delay detection:  
+  - **With plugin → ~4 s**  
+  - **Without plugin → ~8 s**  
 - Built-in game process detection (`RocketLeague.exe`).
-- Background image with PinkBro for a personalized design.
+- One-click BakkesMod plugin installer/ updater (`Assets/Plugins/`).
+- Compact and modern UI with PinkBro artwork integrated into the background.
 
 ## How it Works
 
-1. In Rocket League, go to **Garage → Manage Inventory → Reward Items tab**.  
-2. Select a drop and hover your mouse over the **Open Drop** button.  
-3. Press the **Start hotkey** (default: F1) to begin automatic drop opening.  
-4. Press the **Stop/Exit hotkey** (default: F2) to stop or close the program.  
+1. Start **Rocket League**.  
+2. *(For fastest opening)* enter **Free Play / Training once**, then return to the menu.  
+3. Go to **Garage → Manage Inventory → Reward Items tab**.  
+4. Hover your mouse over the **Open Drop** button.  
+5. Press **F4** to begin automatic drop opening.  
+6. Press **F5** to stop or close the program.  
 
 ⚠️ Make sure you are on the correct screen before starting.  
 
 ## Version
 
-Version 1.0
+Version 1.1.0
 
 ## Author
 
