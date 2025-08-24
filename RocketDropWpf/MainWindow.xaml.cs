@@ -1,10 +1,11 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -23,17 +24,42 @@ namespace RocketDropWpf
         private const int HOTKEY_ID_START = 1001;
         private const int HOTKEY_ID_STOP = 1002;
 
-        private const double OPEN_DELAY_SECONDS = 8.0; // fixed opener delay
+        // Fixed hotkeys: F4 start, F5 stop
+        private const uint START_KEY = (uint)VK.F4;
+        private const uint STOP_KEY = (uint)VK.F5;
+
+        // 8.0s normal, 0.4s mit Plugin
+        private double _openDelaySeconds = 8.0;
 
         private CancellationTokenSource? _cts;
         private HwndSource? _hwndSource;
         private DispatcherTimer? _probeTimer;
+
+        // BakkesMod-Pfade
+        private readonly string _appDir;
+        private readonly string _assetsPluginDir;
+        private readonly string _bakkesRoot;
+        private readonly string _bakkesExe;
+        private readonly string _bakkesPluginsDir;
+        private readonly string _bakkesCfgDir;
+        private readonly string _pluginsCfgPath;
+
+        private const string OurPluginName = "PinkBroDisableCrateAnim"; // eigene DLL (optional)
+        private const string FallbackPluginName = "DisableCrateAnim";       // Originalname
 
         public MainWindow()
         {
             InitializeComponent();
             Loaded += MainWindow_Loaded;
             Closed += MainWindow_Closed;
+
+            _appDir = AppDomain.CurrentDomain.BaseDirectory;
+            _assetsPluginDir = Path.Combine(_appDir, "Assets", "Plugins");
+            _bakkesRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "bakkesmod");
+            _bakkesExe = Path.Combine(_bakkesRoot, "BakkesMod", "BakkesMod.exe");
+            _bakkesPluginsDir = Path.Combine(_bakkesRoot, "bakkesmod", "plugins");
+            _bakkesCfgDir = Path.Combine(_bakkesRoot, "bakkesmod", "cfg");
+            _pluginsCfgPath = Path.Combine(_bakkesCfgDir, "plugins.cfg");
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -42,12 +68,14 @@ namespace RocketDropWpf
             _hwndSource = HwndSource.FromHwnd(helper.Handle);
             _hwndSource.AddHook(WndProc);
 
-            // register initial hotkeys
             RebindHotkeys();
 
-            // periodic presence check (status badge)
             _probeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-            _probeTimer.Tick += (s, _) => UpdatePresenceBadge();
+            _probeTimer.Tick += (s, _) =>
+            {
+                UpdatePresenceBadge();
+                UpdateIntegrationStatus();
+            };
             _probeTimer.Start();
 
             Status("Ready.");
@@ -62,11 +90,12 @@ namespace RocketDropWpf
                 UnregisterHotKey(helper.Handle, HOTKEY_ID_STOP);
             }
             catch { /* ignore */ }
+
             _cts?.Cancel();
             _probeTimer?.Stop();
         }
 
-        // hotkeys
+        // ---------------- Hotkeys ----------------
         private void RebindHotkeys()
         {
             var helper = new WindowInteropHelper(this);
@@ -77,8 +106,8 @@ namespace RocketDropWpf
             }
             catch { /* ignore */ }
 
-            RegisterGlobalHotkey(HOTKEY_ID_START, 0, KeyNameToVk(StartKeyBox.Text));
-            RegisterGlobalHotkey(HOTKEY_ID_STOP, 0, KeyNameToVk(StopKeyBox.Text));
+            RegisterGlobalHotkey(HOTKEY_ID_START, 0, START_KEY);
+            RegisterGlobalHotkey(HOTKEY_ID_STOP, 0, STOP_KEY);
         }
 
         private void RegisterGlobalHotkey(int id, uint modifiers, uint vk)
@@ -88,19 +117,7 @@ namespace RocketDropWpf
                 Status($"Hotkey {id} failed (Admin required?).");
         }
 
-        // buttons
-        private void StartBtn_Click(object sender, RoutedEventArgs e)
-        {
-            RebindHotkeys();
-            StartLoop();
-        }
-
-        private void StopBtn_Click(object sender, RoutedEventArgs e)
-        {
-            StopLoop();
-        }
-
-        // main loop
+        // ---------------- Main loop ----------------
         private void StartLoop()
         {
             if (_cts != null && !_cts.IsCancellationRequested)
@@ -111,8 +128,8 @@ namespace RocketDropWpf
 
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
-            var procName = NormalizeProcName(GameProcBox.Text.Trim()); // RocketLeague from RocketLeague.exe
 
+            var procName = NormalizeProcName(GameProcBox.Text.Trim()); // "RocketLeague" aus "RocketLeague.exe"
             Status("Running…");
 
             Task.Run(async () =>
@@ -136,7 +153,7 @@ namespace RocketDropWpf
                     await Task.Delay(300, token).ConfigureAwait(false);
 
                     SendKeystroke(VK.RETURN);
-                    await Task.Delay(TimeSpan.FromSeconds(OPEN_DELAY_SECONDS), token).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(_openDelaySeconds), token).ConfigureAwait(false);
 
                     SendKeystroke(VK.RETURN);
                     await Task.Delay(50, token).ConfigureAwait(false);
@@ -151,7 +168,7 @@ namespace RocketDropWpf
             Status("Stopped.");
         }
 
-        // process lookup
+        // ---------------- Process lookup ----------------
         private static string NormalizeProcName(string input)
         {
             if (string.IsNullOrWhiteSpace(input)) return "RocketLeague";
@@ -175,7 +192,7 @@ namespace RocketDropWpf
             return (false, IntPtr.Zero);
         }
 
-        // status badge
+        // ---------------- Status badge ----------------
         private void UpdatePresenceBadge()
         {
             var procName = NormalizeProcName(GameProcBox.Text.Trim());
@@ -183,12 +200,14 @@ namespace RocketDropWpf
 
             if (ok)
             {
-                StatusBadge.Background = new SolidColorBrush(Color.FromRgb(0x33, 0xAA, 0x66)); // green
+                // weich/grün
+                StatusBadge.Background = new SolidColorBrush(Color.FromArgb(0x88, 0x33, 0xAA, 0x66));
                 StatusText.Text = "Status: Rocket League detected ✅";
             }
             else
             {
-                StatusBadge.Background = new SolidColorBrush(Color.FromRgb(0xAA, 0x33, 0x33)); // red
+                // weich/rot
+                StatusBadge.Background = new SolidColorBrush(Color.FromArgb(0x88, 0xC2, 0x3B, 0x3B));
                 StatusText.Text = "Status: no window found ❌";
             }
         }
@@ -198,7 +217,7 @@ namespace RocketDropWpf
             Dispatcher.Invoke(() => StatusText.Text = $"Status: {text}");
         }
 
-        // global hotkey messages
+        // ---------------- WndProc (global hotkeys) ----------------
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
             const int WM_HOTKEY = 0x0312;
@@ -214,95 +233,127 @@ namespace RocketDropWpf
                 else if (id == HOTKEY_ID_STOP)
                 {
                     StopLoop();
-                    Application.Current.Shutdown(); // exit on stop hotkey
+                    Application.Current.Shutdown(); // exit on stop
                     handled = true;
                 }
             }
             return IntPtr.Zero;
         }
 
-        // hotkey capture
-        private string _lastPlaceholder = "";
-
-        private void HotkeyBox_GotFocus(object sender, RoutedEventArgs e)
+        // ---------------- BakkesMod Integration ----------------
+        private void UpdateIntegrationStatus()
         {
-            if (sender is System.Windows.Controls.TextBox tb)
+            if (BakkesStatusText == null || PluginLineText == null) return;
+
+            bool hasBakkes = Process.GetProcessesByName("BakkesMod").Length > 0;
+            BakkesStatusText.Text = hasBakkes ? "BakkesMod: running ✅" : "BakkesMod: not running ❌";
+
+            string dllOur = Path.Combine(_bakkesPluginsDir, $"{OurPluginName}.dll");
+            string dllOrig = Path.Combine(_bakkesPluginsDir, $"{FallbackPluginName}.dll");
+            bool hasPlugin = File.Exists(dllOur) || File.Exists(dllOrig);
+
+            // Auto delay switch
+            _openDelaySeconds = hasPlugin ? 4.0 : 8.0;
+
+            // Eine kompakte Zeile inkl. Delay
+            PluginLineText.Text = hasPlugin
+                ? "Plugin: found  —  reduced delay ~4 s"
+                : "Plugin: not found  —  delay ~8 s";
+        }
+
+        private void InstallBakkesMod_Click(object sender, RoutedEventArgs e)
+        {
+            try
             {
-                _lastPlaceholder = tb.Text;
-                tb.Text = "Press any key…";
-                tb.SelectAll();
+                if (File.Exists(_bakkesExe))
+                {
+                    Status("BakkesMod already installed.");
+                    return;
+                }
+
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "https://bakkesmod.com",
+                    UseShellExecute = true
+                });
+                Status("Opened BakkesMod website. Install it, then return.");
+            }
+            catch (Exception ex)
+            {
+                Status($"BakkesMod install/open failed: {ex.Message}");
             }
         }
 
-        private void HotkeyBox_LostFocus(object sender, RoutedEventArgs e)
+        private void InstallPlugin_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is System.Windows.Controls.TextBox tb)
+            try
             {
-                if (tb.Text == "Press any key…" || string.IsNullOrWhiteSpace(tb.Text))
-                    tb.Text = _lastPlaceholder;
-                RebindHotkeys();
+                Directory.CreateDirectory(_bakkesPluginsDir);
+                Directory.CreateDirectory(_bakkesCfgDir);
+
+                string srcOur = Path.Combine(_assetsPluginDir, $"{OurPluginName}.dll");
+                string srcOrig = Path.Combine(_assetsPluginDir, $"{FallbackPluginName}.dll");
+                string chosenSrc = File.Exists(srcOur) ? srcOur : (File.Exists(srcOrig) ? srcOrig : "");
+
+                if (string.IsNullOrEmpty(chosenSrc))
+                {
+                    Status("No plugin DLL found in Assets/Plugins.");
+                    return;
+                }
+
+                string dstName = Path.GetFileName(chosenSrc);
+                string dst = Path.Combine(_bakkesPluginsDir, dstName);
+                File.Copy(chosenSrc, dst, overwrite: true);
+
+                string pluginBase = Path.GetFileNameWithoutExtension(dstName);
+                EnsurePluginsCfgLoad(pluginBase);
+
+                Status($"Installed/updated plugin '{pluginBase}'.");
+                UpdateIntegrationStatus();
+            }
+            catch (Exception ex)
+            {
+                Status($"Plugin install failed: {ex.Message}");
             }
         }
 
-        private void StartKeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        private void EnsurePluginsCfgLoad(string pluginBaseName)
         {
-            e.Handled = true;
-            var key = ExtractKey(e);
-            StartKeyBox.Text = key;
-            StartKeyBox.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
-        }
-
-        private void StopKeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
-        {
-            e.Handled = true;
-            var key = ExtractKey(e);
-            StopKeyBox.Text = key;
-            StopKeyBox.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
-        }
-
-        private static string ExtractKey(KeyEventArgs e)
-        {
-            var k = (e.Key == Key.System) ? e.SystemKey : e.Key;
-            return k switch
+            try
             {
-                Key.Return => "ENTER",
-                Key.Left => "LEFT",
-                Key.Right => "RIGHT",
-                Key.Up => "UP",
-                Key.Down => "DOWN",
-                _ => k.ToString().ToUpperInvariant()
-            };
+                if (!File.Exists(_pluginsCfgPath))
+                    File.WriteAllText(_pluginsCfgPath, "");
+
+                var lines = File.ReadAllLines(_pluginsCfgPath);
+                string loadLine = $"plugin load {pluginBaseName}";
+                foreach (var l in lines)
+                    if (l.Trim().Equals(loadLine, StringComparison.OrdinalIgnoreCase))
+                        return;
+
+                using var sw = new StreamWriter(_pluginsCfgPath, append: true, Encoding.UTF8);
+                sw.WriteLine(loadLine);
+            }
+            catch { /* ignore */ }
         }
 
-        private static uint KeyNameToVk(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return (uint)VK.F1;
-            name = name.Trim().ToUpperInvariant();
-
-            if (name.StartsWith("F") && int.TryParse(name[1..], out int fn) && fn >= 1 && fn <= 24)
-                return (uint)((int)VK.F1 + (fn - 1));
-
-            return name switch
-            {
-                "ENTER" => (uint)VK.RETURN,
-                "LEFT" => (uint)VK.LEFT,
-                "RIGHT" => (uint)VK.RIGHT,
-                "UP" => (uint)VK.UP,
-                "DOWN" => (uint)VK.DOWN,
-                "ESC" or "ESCAPE" => (uint)VK.ESCAPE,
-                _ => (uint)VK.F1
-            };
-        }
-
+        // ---------------- Eingabesimulation ----------------
         private static void SendKeystroke(VK key)
         {
             var inputs = new INPUT[2];
-            inputs[0] = new INPUT { type = 1, U = new InputUnion { ki = new KEYBDINPUT { wVk = key, dwFlags = 0 } } };
-            inputs[1] = new INPUT { type = 1, U = new InputUnion { ki = new KEYBDINPUT { wVk = key, dwFlags = 2 } } }; // KEYUP
+            inputs[0] = new INPUT
+            {
+                type = 1, // INPUT_KEYBOARD
+                U = new InputUnion { ki = new KEYBDINPUT { wVk = key, dwFlags = 0 } }
+            };
+            inputs[1] = new INPUT
+            {
+                type = 1, // INPUT_KEYBOARD
+                U = new InputUnion { ki = new KEYBDINPUT { wVk = key, dwFlags = 2 } } // KEYEVENTF_KEYUP
+            };
             SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
         }
 
-        // WinAPI structs
+        // ---------------- WinAPI structs ----------------
         private enum VK : ushort
         {
             LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28,
@@ -316,6 +367,7 @@ namespace RocketDropWpf
 
         [StructLayout(LayoutKind.Sequential)]
         private struct INPUT { public int type; public InputUnion U; }
+
         [StructLayout(LayoutKind.Explicit)]
         private struct InputUnion
         {
@@ -323,16 +375,19 @@ namespace RocketDropWpf
             [FieldOffset(0)] public KEYBDINPUT ki;
             [FieldOffset(0)] public HARDWAREINPUT hi;
         }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct MOUSEINPUT
         {
             public int dx, dy, mouseData, dwFlags, time; public IntPtr dwExtraInfo;
         }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct KEYBDINPUT
         {
             public VK wVk; public ushort wScan; public int dwFlags; public int time; public IntPtr dwExtraInfo;
         }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct HARDWAREINPUT { public int uMsg; public short wParamL, wParamH; }
     }
